@@ -3,7 +3,7 @@ use nih_plug_egui::{create_egui_editor, egui, widgets, EguiState};
 use std::sync::Arc;
 
 /// The time it takes for the peak meter to decay by 12 dB after switching to complete silence.
-const PEAK_METER_DECAY_MS: f64 = 150.0;
+const PEAK_METER_DECAY_MS: f64 = 50.0;
 
 struct RingModSideChain {
     params: Arc<RingModSideChainParams>,
@@ -198,33 +198,75 @@ impl Plugin for RingModSideChain {
     fn process(
         &mut self,
         buffer: &mut Buffer,
-        _aux: &mut AuxiliaryBuffers,
+        aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        for channel_samples in buffer.iter_samples() {
-            let mut amplitude = 0.0;
-            let num_samples = channel_samples.len();
+        // Get the side-chain input buffer
+        let side_chain_input: &Buffer<'_> = match aux.inputs.get(0) {
+            Some(buffer) => buffer,
+            None => {
+                // Handle missing side-chain input
+                return ProcessStatus::Error("Missing Side Chain");
+            }
+        };
 
-            let gain = self.params.gain.smoothed.next();
-            for sample in channel_samples {
-                *sample *= gain;
-                amplitude += *sample;
+        let num_channels = buffer.channels();
+        let num_samples = buffer.samples();
+
+        // Check that the side-chain buffer matches the main buffer
+        if side_chain_input.channels() != num_channels || side_chain_input.samples() != num_samples
+        {
+            return ProcessStatus::Error("Other bullshit error");
+        }
+
+        // Get smoothed gain values
+        let main_gain = self.params.gain.smoothed.next();
+        let side_chain_gain = self.params.side_chain_gain.smoothed.next();
+
+        // Get slices of channels
+        let main_channels = buffer.as_slice();
+        let side_chain_channels = side_chain_input.as_slice_immutable();
+
+        // Process each channel
+        for (main_channel_samples, side_chain_channel_samples) in
+            main_channels.iter_mut().zip(side_chain_channels.iter())
+        {
+            let mut main_amplitude = 0.0;
+            let mut side_chain_amplitude = 0.0;
+
+            // Process each sample
+            for (main_sample, &side_sample) in main_channel_samples
+                .iter_mut()
+                .zip(side_chain_channel_samples.iter())
+            {
+                // Apply main gain
+                *main_sample *= main_gain;
+
+                // Apply side-chain gain
+                let side_chain_sample = side_sample * side_chain_gain;
+
+                // Rectify and invert the side-chain sample
+                let side_chain_rectified = -side_chain_sample.abs();
+
+                // Modify the main sample
+                *main_sample += (*main_sample * side_chain_rectified) + side_chain_sample;
+
+                // Track maximum amplitude for peak meters
+                let abs_main_sample = main_sample.abs();
+                if abs_main_sample > main_amplitude {
+                    main_amplitude = abs_main_sample;
+                }
+
+                let abs_side_sample = side_sample.abs();
+                if abs_side_sample > side_chain_amplitude {
+                    side_chain_amplitude = abs_side_sample;
+                }
             }
 
-            // To save resources, a plugin can (and probably should!) only perform expensive
-            // calculations that are only displayed on the GUI while the GUI is open
+            // Update peak meters if the GUI is open
             if self.params.editor_state.is_open() {
-                amplitude = (amplitude / num_samples as f32).abs();
-                let current_peak_meter = self.peak_meter.load(std::sync::atomic::Ordering::Relaxed);
-                let new_peak_meter = if amplitude > current_peak_meter {
-                    amplitude
-                } else {
-                    current_peak_meter * self.peak_meter_decay_weight
-                        + amplitude * (1.0 - self.peak_meter_decay_weight)
-                };
-
-                self.peak_meter
-                    .store(new_peak_meter, std::sync::atomic::Ordering::Relaxed)
+                self.update_peak_meter(main_amplitude, &self.peak_meter);
+                self.update_peak_meter(side_chain_amplitude, &self.side_chain_peak_meter);
             }
         }
 
@@ -233,8 +275,23 @@ impl Plugin for RingModSideChain {
 }
 
 impl RingModSideChain {
+    fn update_peak_meter(&self, amplitude: f32, meter: &Arc<AtomicF32>) {
+        let current_peak = meter.load(std::sync::atomic::Ordering::Relaxed);
+        let decay = self.peak_meter_decay_weight;
+
+        let new_peak = if amplitude > current_peak {
+            // If the current amplitude is higher, use it
+            amplitude
+        } else {
+            // Apply exponential decay
+            current_peak * decay
+        };
+
+        meter.store(new_peak, std::sync::atomic::Ordering::Relaxed);
+    }
+
     #[allow(dead_code)]
-    fn update_peak_meter(&self, amplitude: f32, num_samples: usize, meter: &Arc<AtomicF32>) {
+    fn update_peak_meter_old(&self, amplitude: f32, num_samples: usize, meter: &Arc<AtomicF32>) {
         let amplitude = (amplitude / num_samples as f32).abs();
         let current_peak_meter = meter.load(std::sync::atomic::Ordering::Relaxed);
         let new_peak_meter = if amplitude > current_peak_meter {
