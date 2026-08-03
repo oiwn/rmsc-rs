@@ -1,0 +1,11 @@
+[package]
+name = "musictools-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared support code for the MusicTools plugin suite"
+
+[lints]
+workspace = true

@@ -1,0 +1,14 @@
+[vendor]
+name = "oiwn"
+id = "com.oiwn"
+url = "https://github.com/oiwn/musictools-rs"
+# Required by Truce 6.3's config schema even when Audio Units are not built.
+au_manufacturer = "Oiwn"
+
+[[plugin]]
+name = "Bogdan"
+bundle_id = "bogdan"
+crate = "bogdan"
+category = "effect"
+fourcc = "Bgdn"
+vst3_subcategory = "Distortion"
