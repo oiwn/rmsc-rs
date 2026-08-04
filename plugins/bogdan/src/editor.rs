@@ -5,7 +5,7 @@ use std::time::Duration;
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use truce::prelude::*;
 use truce_egui::theme::{BACKGROUND, HEADER_BG, METER_CLIP, TEXT, TEXT_DIM};
-use truce_egui::widgets::param_knob;
+use truce_egui::widgets::{param_dropdown, param_knob};
 use truce_egui::{EditorUi, EguiEditor};
 
 use crate::{BogdanParams, BogdanParamsParamId as P};
@@ -168,9 +168,17 @@ impl EditorUi<BogdanParams> for BogdanEditor {
 
             ui.add_space(5.0);
             ui.horizontal_centered(|ui| {
+                // The dropdown's label baseline aligns with the knob labels, so
+                // Mode sits in the same control row rather than above it.
+                param_dropdown(ui, state, P::Mode, "Mode", 1);
+                ui.add_space(12.0);
                 param_knob(ui, state, P::Drive, "Drive");
-                ui.add_space(34.0);
+                ui.add_space(12.0);
                 param_knob(ui, state, P::Ceiling, "Ceiling");
+                ui.add_space(12.0);
+                param_knob(ui, state, P::Detail, "Detail");
+                ui.add_space(12.0);
+                param_knob(ui, state, P::Amount, "Amount");
             });
         });
     }

@@ -1,81 +1,47 @@
-# Current Task Context: Specify Bogdan detail-preserving clipper
+# Task: Bogdan clip modes + tweak params
 
-State: in progress
+State: implemented; pending live host check
 
-## Plan
+## Product
+Bogdan — detail-preserving clipper (vendor `oiwn`), CLAP + VST3 only.
+Target: drums & mix buses, esp. DnB bass.
 
-- [x] Add a wait-free audio-to-GUI scope feed for the driven and processed
-  signals without allocating or locking in `process`.
-- [x] Replace the undersized stock grid with a fixed-size custom editor around
-  520×320 logical pixels.
-- [x] Draw a stable triggered oscilloscope with driven input and processed
-  output overlays plus visible positive and negative ceiling guides.
-- [x] Retain the Drive and Ceiling controls in a clear layout beneath the scope.
-- [ ] Verify GUI behavior, real-time safety, and host loading in both CLAP and
-  VST3 builds.
-- [ ] Compare candidate delta extraction, filtering, rectification, scaling,
-  stereo, and ceiling behavior.
-- [ ] Validate the candidates against synthetic signals, drum/bus material,
-  spectra, and the supplied waveform reference.
-- [ ] Select and document the final real-time pipeline, parameters, latency,
-  and antialiasing strategy.
-- [ ] Produce decision-complete implementation and acceptance criteria for the
-  Truce plugin.
+## Done (v1)
+- Pipeline: per-channel drive → hard clip at ceiling → delta = driven-clipped →
+  1 kHz one-pole HP of delta → rectified inward duck (`clipped.abs()-|HP|`),
+  zero latency, no oversampling. Sounds good on bass.
+- 520×320 truce-egui scope: wait-free AudioTap streams [driven, processed],
+  8192-frame history, triggered 1024-sample view, Drive + Ceiling knobs.
+  Tests/clippy/rt-paranoid pass; CLAP verified live; VST3 load unconfirmed.
 
-## Findings
+## Problem
+Probe confirmed: on slow/triangle material the 1 kHz HP + abs() rectification
+gives edge-notch artifacts (near-constant duck + spike back to ceiling at the
+apex), not an inward image of the clipped peak. Current sound must be kept.
 
-- Product: **Bogdan — Detail-Preserving Clipper**, vendor `oiwn`.
-- The desired result has a hard outer ceiling but retains inward variations
-  within clipped peaks.
-- This is neither ordinary whole-signal foldback nor transient detection.
-- Reference hypothesis: hard-clip the driven signal, derive and high-pass the
-  lost clipping delta, then use its magnitude to duck inward from the clipped
-  plateau at sample rate.
-- Primary material is drums and mix buses.
-- Exact normalization, filtering, polarity, stereo linking, latency, and
-  antialiasing must be measured rather than assumed.
-- The current zero-latency v1 uses independent channels, a one-pole 1 kHz
-  high-pass, unity inward subtraction, no oversampling, and the existing Drive
-  and Ceiling parameters.
-- Distribution scope is CLAP and VST3 only. Standalone, Audio Unit, VST2, LV2,
-  AAX, and other plugin targets are out of scope.
-- The stock Truce `GridLayout` renders at roughly 140×120 pixels and cannot
-  host custom oscilloscope drawing. Truce provides a wait-free `AudioTap` for
-  streaming samples from the audio thread to a custom editor.
-- The implemented 520×320 `truce-egui` editor drains an interleaved
-  driven/processed `AudioTap` into an 8,192-frame history and renders a
-  triggered 1,024-sample view with Drive and Ceiling controls.
-- Unit, integration, strict Clippy, and `rt-paranoid` checks pass; the CLAP and
-  VST3 release bundles both build, and a live CLAP test confirmed the scope and
-  detail-preserving waveform on bass material. VST3 host loading remains to be
-  confirmed.
+## Decision
+Add a Mode switch — Clean / Detail / Fold — plus shared Detail (HP cutoff,
+log 20–2000 Hz) and Amount (0–100%) params. Detail + 1 kHz + 100% == today,
+bit-for-bit.
+- Clean: plain hard clip.
+- Detail: current rectified duck (DnB bass voice). Default.
+- Fold: signed inward image — reduction = amount*HP*sign(clipped), clamped to
+  [0, ceiling]; deepest at apex, DC-blocked so sustained clips relax to ceiling;
+  pair with a low Detail cutoff.
 
-## Context
+## Implemented
+- `bogdan-dsp`: `ClipMode {Clean,Detail,Fold}` + `DetailSettings`; runtime cutoff
+  (`OnePoleHighPass::set_cutoff`, cached to skip `exp()` when static); `process()`
+  with Fold = signed inward image; `process_sample` wrapper keeps Detail parity.
+  `finite_or_f64` + `safe_sample_rate` added. 16 DSP tests pass.
+- Wrapper: `Mode` EnumParam (id 2, default Detail) + Detail (id 3, log 20–2000 Hz,
+  1 kHz) + Amount (id 4, 0–100%). Read once/frame into `DetailSettings`.
+- Editor: `param_dropdown` Mode + Detail/Amount knobs in the control row.
+- Verified: clippy clean, `--all` tests green, rt-paranoid 0 allocs, CLAP + VST3
+  build. Probe confirms Fold keeps plateau edges at the ceiling (no notch);
+  Detail unchanged. `examples/triangle_probe.rs` compares Detail vs Fold.
 
-The product remains a detail-preserving clipper with this signal flow:
-
-1. Apply input drive.
-2. Hard-clip at the selected ceiling.
-3. Compute the clipping delta between driven and clipped signals.
-4. High-pass the delta to isolate detail that would otherwise disappear.
-5. Rectify or otherwise derive a sample-rate modulation signal.
-6. Subtract or duck that detail inward from the clipped waveform without
-   exceeding the ceiling.
-
-The scope should make that behavior visible rather than act as decoration. Tap
-channel 0 (or the mono channel) after drive and after detail-preserving clipping,
-transfer block-sized interleaved frames through Truce `AudioTap`, and drain on
-the GUI thread at approximately 60 FPS. Keep a recent 1,024-sample view, trigger
-on a rising zero crossing of the driven signal, and draw both signals with
-distinct colors. Preallocate the block transfer buffer during `reset`; the
-audio callback must remain free of allocation, locks, and I/O.
-
-Use a custom Truce editor backend because the built-in grid supports parameter
-widgets and meters but not arbitrary scope rendering. Keep the first version
-fixed-size and focused: scope on top, Drive and Ceiling below, no additional
-parameters or format targets.
-
-## Next
-
-Load the built VST3 in a host and confirm its editor/audio behavior, then begin
-the candidate DSP comparison.
+## Open
+- Live host check: switch modes, confirm Detail == old sound, Fold peak-image,
+  Clean flat; still confirm VST3 host load.
+- Per-mode default cutoff (Fold ~30 Hz vs Detail 1 kHz) — one shared default for now.

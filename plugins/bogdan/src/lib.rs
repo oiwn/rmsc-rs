@@ -1,9 +1,27 @@
 //! Truce wrapper for the Bogdan detail-preserving clipper.
 
-use bogdan_dsp::DetailClipper;
+use bogdan_dsp::{ClipMode, DetailClipper, DetailSettings};
 use truce::prelude::*;
 
 mod editor;
+
+/// Peak-reshaping voice, mirrors [`bogdan_dsp::ClipMode`] on the framework side.
+#[derive(ParamEnum)]
+pub enum Mode {
+    Clean,
+    Detail,
+    Fold,
+}
+
+impl Mode {
+    fn to_dsp(self) -> ClipMode {
+        match self {
+            Mode::Clean => ClipMode::Clean,
+            Mode::Detail => ClipMode::Detail,
+            Mode::Fold => ClipMode::Fold,
+        }
+    }
+}
 
 #[derive(Params)]
 pub struct BogdanParams {
@@ -26,6 +44,33 @@ pub struct BogdanParams {
         smooth = "exp(5)"
     )]
     pub ceiling: FloatParam,
+
+    /// Peak-reshaping mode. Defaults to `Detail` (variant index 1).
+    #[param(id = 2, name = "Mode", default = 1)]
+    pub mode: EnumParam<Mode>,
+
+    /// Clipping-delta high-pass cutoff. Low values fold the peak shape inward;
+    /// high values isolate fast edge detail (the classic Detail voice).
+    #[param(
+        id = 3,
+        name = "Detail",
+        range = "log(20, 2000)",
+        default = 1000,
+        unit = "Hz",
+        smooth = "exp(20)"
+    )]
+    pub detail: FloatParam,
+
+    /// Inward depth as a percentage; 0% is a plain clip, 100% is full motion.
+    #[param(
+        id = 4,
+        name = "Amount",
+        range = "linear(0, 100)",
+        default = 100,
+        unit = "%",
+        smooth = "exp(5)"
+    )]
+    pub amount: FloatParam,
 
     /// Interleaved `[driven, processed]` frames for the oscilloscope.
     #[skip]
@@ -73,13 +118,18 @@ impl PluginLogic for Bogdan {
         debug_assert!(state.scope_transfer.len() >= num_samples * 2);
 
         for sample_index in 0..buffer.num_samples() {
-            let drive = db_to_linear(params.drive.read());
-            let ceiling = db_to_linear(params.ceiling.read());
+            // Advance every smoothed parameter exactly once per frame.
+            let settings = DetailSettings {
+                drive: db_to_linear(params.drive.read()),
+                ceiling: db_to_linear(params.ceiling.read()),
+                mode: params.mode.value().to_dsp(),
+                detail_hz: params.detail.read(),
+                amount: params.amount.read() / 100.0,
+            };
 
             for channel in 0..buffer.channels() {
                 let (input, output) = buffer.io(channel);
-                let frame =
-                    state.channels[channel].process_sample(input[sample_index], drive, ceiling);
+                let frame = state.channels[channel].process(input[sample_index], settings);
                 output[sample_index] = frame.output;
 
                 if channel == 0 {

@@ -19,6 +19,14 @@ pub fn finite_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() { value } else { fallback }
 }
 
+/// Double-precision counterpart to [`finite_or`], used for sample rates and
+/// filter cutoffs where the coefficient math runs in `f64`.
+#[inline]
+#[must_use]
+pub fn finite_or_f64(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() { value } else { fallback }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -32,6 +40,14 @@ mod tests {
     fn non_finite_values_use_fallback() {
         for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert_eq!(finite_or(value, 0.0), 0.0);
+        }
+    }
+
+    #[test]
+    fn finite_or_f64_matches_the_f32_contract() {
+        assert_eq!(finite_or_f64(0.25, 1.0), 0.25);
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(finite_or_f64(value, 0.0), 0.0);
         }
     }
 }

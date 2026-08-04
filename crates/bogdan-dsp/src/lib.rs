@@ -3,12 +3,53 @@
 //! The hard-clipping reference and the first usable detail-preserving processor
 //! live together here so they can be compared without loading a plugin host.
 
-use musictools_core::finite_or;
+use musictools_core::{finite_or, finite_or_f64};
 
-/// The fixed high-pass cutoff used by the first usable processor.
+/// The default high-pass cutoff, used by the Detail voice and as the wrapper's
+/// initial `Detail` knob value.
 pub const DEFAULT_DETAIL_HIGH_PASS_HZ: f64 = 1_000.0;
 
 const DEFAULT_SAMPLE_RATE_HZ: f64 = 44_100.0;
+
+/// Coerce a host-supplied sample rate to a strictly positive, finite value so
+/// coefficient math and Nyquist clamps can never divide by zero or invert.
+#[inline]
+fn safe_sample_rate(sample_rate: f64) -> f64 {
+    if sample_rate.is_finite() && sample_rate > 0.0 {
+        sample_rate
+    } else {
+        DEFAULT_SAMPLE_RATE_HZ
+    }
+}
+
+/// Selects how a clipped peak is reshaped inside the ceiling.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClipMode {
+    /// Plain hard clip; the clipping delta is discarded.
+    Clean,
+    /// High-passed clipping delta rectified and ducked inward. The original
+    /// detail-preserving voice that suits drum-and-bass material.
+    #[default]
+    Detail,
+    /// Signed inward image: the high-passed excess is folded toward zero so the
+    /// dip tracks the clipped peak shape without breaching the ceiling.
+    Fold,
+}
+
+/// Per-sample control values for [`DetailClipper::process`].
+#[derive(Clone, Copy, Debug)]
+pub struct DetailSettings {
+    /// Linear input gain applied before clipping.
+    pub drive: f32,
+    /// Symmetric linear-amplitude ceiling.
+    pub ceiling: f32,
+    /// Reshaping mode.
+    pub mode: ClipMode,
+    /// Clipping-delta high-pass cutoff in hertz.
+    pub detail_hz: f32,
+    /// Inward depth in `0.0..=1.0`.
+    pub amount: f32,
+}
 
 /// The per-sample components produced by the hard-clipping reference path.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -55,15 +96,19 @@ impl OnePoleHighPass {
     }
 
     fn reset(&mut self, sample_rate: f64) {
-        let safe_sample_rate = if sample_rate.is_finite() && sample_rate > 0.0 {
-            sample_rate
-        } else {
-            DEFAULT_SAMPLE_RATE_HZ
-        };
-        let cutoff = DEFAULT_DETAIL_HIGH_PASS_HZ.min(safe_sample_rate * 0.49);
-        self.coefficient = (-std::f64::consts::TAU * cutoff / safe_sample_rate).exp() as f32;
         self.previous_input = 0.0;
         self.previous_output = 0.0;
+        self.set_cutoff(DEFAULT_DETAIL_HIGH_PASS_HZ, sample_rate);
+    }
+
+    /// Recompute the coefficient for a new cutoff, preserving filter memory so
+    /// the cutoff can be swept at audio rate without clicks.
+    fn set_cutoff(&mut self, cutoff_hz: f64, sample_rate: f64) {
+        let sample_rate = safe_sample_rate(sample_rate);
+        let nyquist_guard = (sample_rate * 0.49).max(1.0);
+        let cutoff =
+            finite_or_f64(cutoff_hz, DEFAULT_DETAIL_HIGH_PASS_HZ).clamp(1.0, nyquist_guard);
+        self.coefficient = (-std::f64::consts::TAU * cutoff / sample_rate).exp() as f32;
     }
 
     fn process(&mut self, input: f32) -> f32 {
@@ -79,6 +124,8 @@ impl OnePoleHighPass {
 #[derive(Clone, Copy, Debug)]
 pub struct DetailClipper {
     delta_high_pass: OnePoleHighPass,
+    sample_rate: f64,
+    current_cutoff_hz: f32,
 }
 
 impl Default for DetailClipper {
@@ -91,30 +138,63 @@ impl DetailClipper {
     /// Construct a processor configured for `sample_rate` hertz.
     #[must_use]
     pub fn new(sample_rate: f64) -> Self {
+        let sample_rate = safe_sample_rate(sample_rate);
         Self {
             delta_high_pass: OnePoleHighPass::new(sample_rate),
+            sample_rate,
+            current_cutoff_hz: DEFAULT_DETAIL_HIGH_PASS_HZ as f32,
         }
     }
 
     /// Clear filter memory and update coefficients for a new sample rate.
     pub fn reset(&mut self, sample_rate: f64) {
-        self.delta_high_pass.reset(sample_rate);
+        self.sample_rate = safe_sample_rate(sample_rate);
+        self.delta_high_pass.reset(self.sample_rate);
+        self.current_cutoff_hz = DEFAULT_DETAIL_HIGH_PASS_HZ as f32;
     }
 
-    /// Process one sample while exposing the intermediate analysis signals.
+    /// Process one sample through the selected [`ClipMode`] while exposing the
+    /// intermediate analysis signals.
     ///
-    /// The high-passed magnitude is subtracted from a clipped plateau toward
-    /// zero. Unclipped samples are unchanged and the output can never exceed
-    /// the hard-clipping reference ceiling.
+    /// The output can never exceed the hard-clipping reference ceiling, and
+    /// unclipped samples always pass through unchanged.
     #[must_use]
-    pub fn process_sample(&mut self, input: f32, drive: f32, ceiling: f32) -> DetailFrame {
-        let frame = hard_clip_frame(input, drive, ceiling);
+    pub fn process(&mut self, input: f32, settings: DetailSettings) -> DetailFrame {
+        let frame = hard_clip_frame(input, settings.drive, settings.ceiling);
+
+        // Retune the delta high-pass only when the cutoff actually moves, so a
+        // static `Detail` knob costs no `exp()` per sample.
+        let nyquist_guard = (self.sample_rate * 0.49).max(1.0) as f32;
+        let cutoff = finite_or(settings.detail_hz, DEFAULT_DETAIL_HIGH_PASS_HZ as f32)
+            .clamp(1.0, nyquist_guard);
+        if cutoff != self.current_cutoff_hz {
+            self.delta_high_pass
+                .set_cutoff(f64::from(cutoff), self.sample_rate);
+            self.current_cutoff_hz = cutoff;
+        }
+
+        // Run the filter every sample so its memory stays warm across mode
+        // switches and unclipped gaps, avoiding clicks when clipping resumes.
         let filtered_delta = self.delta_high_pass.process(frame.delta);
-        let output = if frame.delta == 0.0 {
-            frame.clipped
-        } else {
-            let magnitude = (frame.clipped.abs() - filtered_delta.abs()).max(0.0);
-            magnitude.copysign(frame.clipped)
+        let amount = finite_or(settings.amount, 1.0).clamp(0.0, 1.0);
+
+        let output = match settings.mode {
+            ClipMode::Clean => frame.clipped,
+            _ if frame.delta == 0.0 => frame.clipped,
+            ClipMode::Detail => {
+                // Rectified inward duck: the original detail-preserving voice.
+                let magnitude = (frame.clipped.abs() - amount * filtered_delta.abs()).max(0.0);
+                magnitude.copysign(frame.clipped)
+            }
+            ClipMode::Fold => {
+                // Signed inward image. `filtered_delta` shares the clip
+                // polarity, so folding it toward zero deepens the dip where the
+                // peak was tallest; the clamp keeps the result inside
+                // `[0, ceiling]` on the clip's side.
+                let reduction = amount * filtered_delta * frame.clipped.signum();
+                let magnitude = (frame.clipped.abs() - reduction).clamp(0.0, frame.clipped.abs());
+                magnitude.copysign(frame.clipped)
+            }
         };
 
         DetailFrame {
@@ -124,6 +204,22 @@ impl DetailClipper {
             filtered_delta,
             output: finite_or(output, 0.0),
         }
+    }
+
+    /// Convenience wrapper preserving the original Detail voice: default cutoff,
+    /// full inward depth. Kept so existing callers and tests are unaffected.
+    #[must_use]
+    pub fn process_sample(&mut self, input: f32, drive: f32, ceiling: f32) -> DetailFrame {
+        self.process(
+            input,
+            DetailSettings {
+                drive,
+                ceiling,
+                mode: ClipMode::Detail,
+                detail_hz: DEFAULT_DETAIL_HIGH_PASS_HZ as f32,
+                amount: 1.0,
+            },
+        )
     }
 }
 
@@ -288,5 +384,137 @@ mod tests {
         let after_reset = reset_processor.process_sample(1.5, 1.0, 1.0);
         let fresh = fresh_processor.process_sample(1.5, 1.0, 1.0);
         assert_eq!(after_reset, fresh);
+    }
+
+    fn settings(mode: ClipMode, detail_hz: f32, amount: f32) -> DetailSettings {
+        DetailSettings {
+            drive: 1.0,
+            ceiling: 1.0,
+            mode,
+            detail_hz,
+            amount,
+        }
+    }
+
+    /// Naive triangle in `[-1, 1]` from a phase in cycles.
+    fn triangle(phase: f32) -> f32 {
+        4.0 * (phase - (phase + 0.5).floor()).abs() - 1.0
+    }
+
+    #[test]
+    fn clean_mode_is_a_plain_hard_clip() {
+        let mut processor = DetailClipper::new(48_000.0);
+
+        for input in [-2.0, -1.5, -0.5, 0.0, 0.5, 1.5, 2.0] {
+            let frame = processor.process(input, settings(ClipMode::Clean, 1_000.0, 1.0));
+            assert_eq!(frame.output, frame.clipped);
+            assert_eq!(frame.output, hard_clip_frame(input, 1.0, 1.0).clipped);
+        }
+    }
+
+    #[test]
+    fn zero_amount_leaves_the_hard_clip_untouched() {
+        for mode in [ClipMode::Detail, ClipMode::Fold] {
+            let mut processor = DetailClipper::new(48_000.0);
+            for input in [1.1, 2.0, -1.4, -3.0, 0.9] {
+                let frame = processor.process(input, settings(mode, 1_000.0, 0.0));
+                assert_eq!(frame.output, frame.clipped);
+            }
+        }
+    }
+
+    #[test]
+    fn fold_dips_deepest_at_the_clipped_peak() {
+        let mut processor = DetailClipper::new(48_000.0);
+        let drive = 3.0_f32;
+        let ceiling = 0.8_f32;
+        let freq = 110.0_f32;
+        let cycle = (48_000.0 / freq) as usize;
+
+        let mut region: Vec<(f32, f32)> = Vec::new();
+        for index in 0..(cycle * 6) {
+            let phase = index as f32 / 48_000.0 * freq;
+            let frame = processor.process(
+                triangle(phase),
+                DetailSettings {
+                    drive,
+                    ceiling,
+                    mode: ClipMode::Fold,
+                    detail_hz: 30.0,
+                    amount: 1.0,
+                },
+            );
+            // Collect one positive clipped plateau from a settled late cycle.
+            if index >= cycle * 5 && frame.clipped > 0.0 && frame.delta > 0.0 {
+                region.push((frame.driven, frame.output));
+                assert!(frame.output >= 0.0 && frame.output <= frame.clipped);
+            }
+        }
+
+        assert!(region.len() > 8, "expected a clipped plateau to inspect");
+        let apex = region
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.0.partial_cmp(&b.1.0).unwrap())
+            .unwrap()
+            .0;
+        let apex_output = region[apex].1;
+        let edge_output = region.first().unwrap().1.min(region.last().unwrap().1);
+
+        // The dip is deepest at the tallest part of the peak, not at the edges
+        // (the old rectified-duck voice notched the edges instead).
+        assert!(apex_output < edge_output);
+        assert!(apex_output < ceiling);
+    }
+
+    #[test]
+    fn fold_sustained_clip_relaxes_to_the_ceiling() {
+        let mut processor = DetailClipper::new(48_000.0);
+        let mut last = processor.process(2.0, settings(ClipMode::Fold, 30.0, 1.0));
+        let first = last;
+        for _ in 0..8_192 {
+            last = processor.process(2.0, settings(ClipMode::Fold, 30.0, 1.0));
+        }
+
+        assert!(first.output < first.clipped);
+        assert!((last.output - last.clipped).abs() < 1.0e-3);
+    }
+
+    #[test]
+    fn fold_mode_is_polarity_symmetric() {
+        let mut positive = DetailClipper::new(48_000.0);
+        let mut negative = DetailClipper::new(48_000.0);
+
+        for input in [1.1, 1.4, 2.0, 1.2, 0.8] {
+            let up = positive
+                .process(input, settings(ClipMode::Fold, 30.0, 1.0))
+                .output;
+            let down = negative
+                .process(-input, settings(ClipMode::Fold, 30.0, 1.0))
+                .output;
+            assert!((up + down).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn all_modes_respect_the_ceiling() {
+        for mode in [ClipMode::Clean, ClipMode::Detail, ClipMode::Fold] {
+            let mut processor = DetailClipper::new(96_000.0);
+            for ceiling in [0.01_f32, 0.1, 0.5, 1.0, 2.0] {
+                for input in [-100.0, -2.0, -0.25, 0.25, 2.0, 100.0] {
+                    let frame = processor.process(
+                        input,
+                        DetailSettings {
+                            drive: 4.0,
+                            ceiling,
+                            mode,
+                            detail_hz: 30.0,
+                            amount: 1.0,
+                        },
+                    );
+                    assert!(frame.output.abs() <= ceiling + 1.0e-6);
+                }
+            }
+        }
     }
 }
