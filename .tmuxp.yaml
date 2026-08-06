@@ -1,4 +1,4 @@
-session_name: rmsc-rs
+session_name: musictools-rs
 shell_command_before: "export RUST_LOG=info; sleep 2;"
 windows:
   - window_name: code
@@ -6,7 +6,13 @@ windows:
     start-directory: ./
     panes:
       - shell_command:
-        - helix
+        - hx
+
+  - window_name: agent
+    start-directory: ./
+    panes:
+      - shell_command:
+        - codex
   - window_name: cmd1
     start-directory: ./
     panes:
@@ -20,4 +26,4 @@ windows:
   - window_name: notes
     panes:
       - shell_command:
-        - emacs -nw notes.org
+        - yazi

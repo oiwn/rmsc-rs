@@ -1,0 +1,5 @@
+[alias]
+xtask = "truce"
+
+# Machine-specific signing and SDK values belong in an untracked local config,
+# not in this shared workspace configuration.
