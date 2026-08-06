@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "bogdan"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bogdan-dsp",
  "clap-sys",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "bogdan-dsp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "musictools-core",
 ]
@@ -819,7 +819,7 @@ dependencies = [
 
 [[package]]
 name = "musictools-core"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "naga"

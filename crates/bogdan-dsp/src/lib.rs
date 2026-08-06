@@ -31,9 +31,19 @@ pub enum ClipMode {
     /// detail-preserving voice that suits drum-and-bass material.
     #[default]
     Detail,
-    /// Signed inward image: the high-passed excess is folded toward zero so the
-    /// dip tracks the clipped peak shape without breaching the ceiling.
+    /// Antialiased wavefolder: excursions past the ceiling reflect back inside
+    /// it. Drive sets the fold density, Amount blends clip toward fold.
     Fold,
+}
+
+/// Fold transfer function used by [`ClipMode::Fold`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FoldShape {
+    /// `C * sin(pi x / 2C)` — smooth, musical, closed-form antiderivative.
+    #[default]
+    Sine,
+    /// `C * (2/pi) * asin(sin(pi x / 2C))` — brighter zig-zag folds.
+    Triangle,
 }
 
 /// Per-sample control values for [`DetailClipper::process`].
@@ -45,10 +55,13 @@ pub struct DetailSettings {
     pub ceiling: f32,
     /// Reshaping mode.
     pub mode: ClipMode,
-    /// Clipping-delta high-pass cutoff in hertz.
+    /// Clipping-delta high-pass cutoff in hertz (Detail mode only).
     pub detail_hz: f32,
-    /// Inward depth in `0.0..=1.0`.
+    /// Effect depth in `0.0..=1.0`: inward duck for Detail, clip→fold blend for
+    /// Fold. Ignored by Clean.
     pub amount: f32,
+    /// Fold transfer function (Fold mode only).
+    pub shape: FoldShape,
 }
 
 /// The per-sample components produced by the hard-clipping reference path.
@@ -120,12 +133,14 @@ impl OnePoleHighPass {
     }
 }
 
-/// Stateful, zero-latency detail-preserving clipper for one audio channel.
+/// Stateful, detail-preserving clipper / wavefolder for one audio channel.
 #[derive(Clone, Copy, Debug)]
 pub struct DetailClipper {
     delta_high_pass: OnePoleHighPass,
     sample_rate: f64,
     current_cutoff_hz: f32,
+    /// Previous driven input, the one-sample memory the Fold ADAA needs.
+    prev_driven: f32,
 }
 
 impl Default for DetailClipper {
@@ -143,6 +158,7 @@ impl DetailClipper {
             delta_high_pass: OnePoleHighPass::new(sample_rate),
             sample_rate,
             current_cutoff_hz: DEFAULT_DETAIL_HIGH_PASS_HZ as f32,
+            prev_driven: 0.0,
         }
     }
 
@@ -151,6 +167,7 @@ impl DetailClipper {
         self.sample_rate = safe_sample_rate(sample_rate);
         self.delta_high_pass.reset(self.sample_rate);
         self.current_cutoff_hz = DEFAULT_DETAIL_HIGH_PASS_HZ as f32;
+        self.prev_driven = 0.0;
     }
 
     /// Process one sample through the selected [`ClipMode`] while exposing the
@@ -187,15 +204,24 @@ impl DetailClipper {
                 magnitude.copysign(frame.clipped)
             }
             ClipMode::Fold => {
-                // Signed inward image. `filtered_delta` shares the clip
-                // polarity, so folding it toward zero deepens the dip where the
-                // peak was tallest; the clamp keeps the result inside
-                // `[0, ceiling]` on the clip's side.
-                let reduction = amount * filtered_delta * frame.clipped.signum();
-                let magnitude = (frame.clipped.abs() - reduction).clamp(0.0, frame.clipped.abs());
-                magnitude.copysign(frame.clipped)
+                // Antialiased wavefolder over the driven signal. The ceiling
+                // sets the fold amplitude and Drive (already baked into
+                // `frame.driven`) sets the fold density.
+                let ceiling = finite_or(settings.ceiling, 1.0)
+                    .abs()
+                    .max(f32::MIN_POSITIVE);
+                fold_adaa(
+                    frame.driven,
+                    self.prev_driven,
+                    ceiling,
+                    amount,
+                    settings.shape,
+                )
             }
         };
+
+        // The wavefolder consumes the driven sample as its one-sample memory.
+        self.prev_driven = frame.driven;
 
         DetailFrame {
             driven: frame.driven,
@@ -218,9 +244,118 @@ impl DetailClipper {
                 mode: ClipMode::Detail,
                 detail_hz: DEFAULT_DETAIL_HIGH_PASS_HZ as f32,
                 amount: 1.0,
+                shape: FoldShape::Sine,
             },
         )
     }
+}
+
+// ---------------------------------------------------------------------------
+// Wavefolder (Fold mode)
+// ---------------------------------------------------------------------------
+//
+// A memoryless nonlinearity `h(x)` that blends a hard clip toward a periodic
+// fold, made alias-suppressed with first-order antiderivative antialiasing
+// (ADAA): `y = (H(x) - H(x1)) / (x - x1)`, where `H` is the antiderivative of
+// `h`. All functions work on the driven sample `x`; the ceiling `c` (> 0) is
+// the fold amplitude.
+
+/// Threshold on `|x - x1|` below which the ADAA quotient is ill-conditioned and
+/// we fall back to evaluating the nonlinearity at the midpoint.
+const ADAA_EPSILON: f32 = 1.0e-5;
+
+/// Continuous hard clip to `[-c, c]`.
+fn clip_value(x: f32, c: f32) -> f32 {
+    x.clamp(-c, c)
+}
+
+/// Antiderivative of [`clip_value`]: `x^2/2` inside the ceiling, linear beyond.
+fn clip_antideriv(x: f32, c: f32) -> f32 {
+    if x.abs() <= c {
+        0.5 * x * x
+    } else {
+        c * x.abs() - 0.5 * c * c
+    }
+}
+
+/// Fold transfer function value, bounded to `[-c, c]`.
+fn fold_value(x: f32, c: f32, shape: FoldShape) -> f32 {
+    let w = std::f32::consts::FRAC_PI_2 * x / c; // pi/2 * x/c; ceiling at x = c
+    match shape {
+        FoldShape::Sine => c * w.sin(),
+        FoldShape::Triangle => c * std::f32::consts::FRAC_2_PI * w.sin().asin(),
+    }
+}
+
+/// Antiderivative of [`fold_value`].
+fn fold_antideriv(x: f32, c: f32, shape: FoldShape) -> f32 {
+    match shape {
+        FoldShape::Sine => {
+            // ∫ c sin(pi x / 2c) dx = -(2 c^2 / pi) cos(pi x / 2c)
+            let w = std::f32::consts::FRAC_PI_2 * x / c;
+            -(2.0 * c * c / std::f32::consts::PI) * w.cos()
+        }
+        FoldShape::Triangle => triangle_antideriv(x, c),
+    }
+}
+
+/// Antiderivative of the triangle fold, built by phase reduction.
+///
+/// The triangle has period `4c`, slopes `±1`, and `f(0) = 0` rising. Over one
+/// period the running integral is a chain of parabolic arcs; the triangle is
+/// zero-mean so the antiderivative is itself periodic. We reduce `x` into
+/// `[-2c, 2c)` around the nearest period and integrate the local segment from a
+/// reference where `F(0) = 0`.
+fn triangle_antideriv(x: f32, c: f32) -> f32 {
+    let period = 4.0 * c;
+    // Phase in [-2c, 2c): the four linear segments are
+    //   [-2c,-c): f = -2c - t   (rising from 0 at -2c? no) -- see mapping below.
+    // Reduce to r in [-2c, 2c).
+    let mut r = x - period * (x / period).round();
+    if r < -2.0 * c {
+        r += period;
+    } else if r >= 2.0 * c {
+        r -= period;
+    }
+    // f(r) piecewise:
+    //   |r| <= c        : f = r                     (central rising segment)
+    //   r >  c          : f = 2c - r                (folds back down)
+    //   r < -c          : f = -2c - r               (folds back up)
+    // Integrate from 0 with F(0) = 0, matching values at the ±c breakpoints.
+    if r.abs() <= c {
+        0.5 * r * r
+    } else if r > c {
+        // F(c) = c^2/2; from c to r, ∫(2c - t) dt = 2c(r-c) - (r^2-c^2)/2
+        0.5 * c * c + 2.0 * c * (r - c) - 0.5 * (r * r - c * c)
+    } else {
+        // r < -c, mirror of the r > c branch (F is even for this triangle)
+        let r = -r;
+        0.5 * c * c + 2.0 * c * (r - c) - 0.5 * (r * r - c * c)
+    }
+}
+
+/// Combined clip→fold nonlinearity, blended by `amount`.
+fn fold_mix_value(x: f32, c: f32, amount: f32, shape: FoldShape) -> f32 {
+    (1.0 - amount) * clip_value(x, c) + amount * fold_value(x, c, shape)
+}
+
+/// Antiderivative of [`fold_mix_value`].
+fn fold_mix_antideriv(x: f32, c: f32, amount: f32, shape: FoldShape) -> f32 {
+    (1.0 - amount) * clip_antideriv(x, c) + amount * fold_antideriv(x, c, shape)
+}
+
+/// First-order ADAA of the clip→fold nonlinearity for one sample.
+fn fold_adaa(x: f32, x1: f32, c: f32, amount: f32, shape: FoldShape) -> f32 {
+    let x = finite_or(x, 0.0);
+    let x1 = finite_or(x1, 0.0);
+    let out = if (x - x1).abs() < ADAA_EPSILON {
+        fold_mix_value(0.5 * (x + x1), c, amount, shape)
+    } else {
+        (fold_mix_antideriv(x, c, amount, shape) - fold_mix_antideriv(x1, c, amount, shape))
+            / (x - x1)
+    };
+    // Numerically the quotient can nudge a hair past the ceiling; keep it bounded.
+    out.clamp(-c, c)
 }
 
 /// Analyze one sample against a symmetric linear-amplitude ceiling.
@@ -393,12 +528,19 @@ mod tests {
             mode,
             detail_hz,
             amount,
+            shape: FoldShape::Sine,
         }
     }
 
-    /// Naive triangle in `[-1, 1]` from a phase in cycles.
-    fn triangle(phase: f32) -> f32 {
-        4.0 * (phase - (phase + 0.5).floor()).abs() - 1.0
+    fn fold(drive: f32, ceiling: f32, amount: f32, shape: FoldShape) -> DetailSettings {
+        DetailSettings {
+            drive,
+            ceiling,
+            mode: ClipMode::Fold,
+            detail_hz: 1_000.0,
+            amount,
+            shape,
+        }
     }
 
     #[test]
@@ -413,92 +555,122 @@ mod tests {
     }
 
     #[test]
-    fn zero_amount_leaves_the_hard_clip_untouched() {
-        for mode in [ClipMode::Detail, ClipMode::Fold] {
+    fn detail_zero_amount_leaves_the_hard_clip_untouched() {
+        let mut processor = DetailClipper::new(48_000.0);
+        for input in [1.1, 2.0, -1.4, -3.0, 0.9] {
+            let frame = processor.process(input, settings(ClipMode::Detail, 1_000.0, 0.0));
+            assert_eq!(frame.output, frame.clipped);
+        }
+    }
+
+    #[test]
+    fn fold_output_never_exceeds_the_ceiling() {
+        for shape in [FoldShape::Sine, FoldShape::Triangle] {
+            let mut processor = DetailClipper::new(96_000.0);
+            for ceiling in [0.01_f32, 0.1, 0.5, 1.0, 2.0] {
+                for input in [-100.0, -2.3, -0.75, 0.0, 0.75, 2.3, 100.0] {
+                    let out = processor
+                        .process(input, fold(4.0, ceiling, 1.0, shape))
+                        .output;
+                    assert!(out.abs() <= ceiling + 1.0e-6, "shape {shape:?} out {out}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fold_reflects_back_to_zero_at_twice_the_ceiling() {
+        // f(2C) = 0 for both shapes (sin(pi) = 0; triangle 2C-2C = 0).
+        for shape in [FoldShape::Sine, FoldShape::Triangle] {
             let mut processor = DetailClipper::new(48_000.0);
-            for input in [1.1, 2.0, -1.4, -3.0, 0.9] {
-                let frame = processor.process(input, settings(mode, 1_000.0, 0.0));
-                assert_eq!(frame.output, frame.clipped);
+            let mut out = 0.0;
+            for _ in 0..8 {
+                // Drive 2.0, ceiling 1.0 => driven = 2.0 = 2C.
+                out = processor.process(1.0, fold(2.0, 1.0, 1.0, shape)).output;
+            }
+            assert!(out.abs() < 1.0e-4, "shape {shape:?} settled at {out}");
+        }
+    }
+
+    #[test]
+    fn triangle_fold_is_transparent_below_the_ceiling() {
+        // The triangle fold is the identity inside [-C, C]; a slow sub-ceiling
+        // ramp should pass through (ADAA averages, so allow a small tolerance).
+        let mut processor = DetailClipper::new(48_000.0);
+        for step in -50..=50 {
+            let x = step as f32 / 100.0; // |x| <= 0.5, well inside ceiling 1.0
+            let out = processor
+                .process(x, fold(1.0, 1.0, 1.0, FoldShape::Triangle))
+                .output;
+            assert!((out - x).abs() < 5.0e-3, "x {x} -> {out}");
+        }
+    }
+
+    #[test]
+    fn fold_is_polarity_symmetric() {
+        for shape in [FoldShape::Sine, FoldShape::Triangle] {
+            let mut positive = DetailClipper::new(48_000.0);
+            let mut negative = DetailClipper::new(48_000.0);
+            for input in [0.3, 0.8, 1.4, 2.0, 1.1, 0.5] {
+                let up = positive.process(input, fold(1.5, 1.0, 1.0, shape)).output;
+                let down = negative.process(-input, fold(1.5, 1.0, 1.0, shape)).output;
+                assert!((up + down).abs() < 1.0e-6, "shape {shape:?}");
             }
         }
     }
 
     #[test]
-    fn fold_dips_deepest_at_the_clipped_peak() {
-        let mut processor = DetailClipper::new(48_000.0);
-        let drive = 3.0_f32;
-        let ceiling = 0.8_f32;
-        let freq = 110.0_f32;
-        let cycle = (48_000.0 / freq) as usize;
-
-        let mut region: Vec<(f32, f32)> = Vec::new();
-        for index in 0..(cycle * 6) {
-            let phase = index as f32 / 48_000.0 * freq;
-            let frame = processor.process(
-                triangle(phase),
-                DetailSettings {
-                    drive,
-                    ceiling,
-                    mode: ClipMode::Fold,
-                    detail_hz: 30.0,
-                    amount: 1.0,
-                },
-            );
-            // Collect one positive clipped plateau from a settled late cycle.
-            if index >= cycle * 5 && frame.clipped > 0.0 && frame.delta > 0.0 {
-                region.push((frame.driven, frame.output));
-                assert!(frame.output >= 0.0 && frame.output <= frame.clipped);
+    fn fold_antiderivatives_match_their_functions() {
+        // Central finite difference of F should track f for both shapes.
+        let c = 0.8_f32;
+        let h = 1.0e-3_f32;
+        for shape in [FoldShape::Sine, FoldShape::Triangle] {
+            let mut x = -3.0_f32;
+            while x <= 3.0 {
+                // Skip the triangle's slope discontinuities where the central
+                // difference straddles a corner.
+                let near_corner = matches!(shape, FoldShape::Triangle)
+                    && ((x / c + 1.0).rem_euclid(2.0) - 1.0).abs() < 5.0e-3;
+                if !near_corner {
+                    let numeric = (fold_antideriv(x + h, c, shape)
+                        - fold_antideriv(x - h, c, shape))
+                        / (2.0 * h);
+                    let exact = fold_value(x, c, shape);
+                    assert!(
+                        (numeric - exact).abs() < 5.0e-3,
+                        "shape {shape:?} x {x}: {numeric} vs {exact}"
+                    );
+                }
+                x += 0.05;
             }
         }
-
-        assert!(region.len() > 8, "expected a clipped plateau to inspect");
-        let apex = region
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.0.partial_cmp(&b.1.0).unwrap())
-            .unwrap()
-            .0;
-        let apex_output = region[apex].1;
-        let edge_output = region.first().unwrap().1.min(region.last().unwrap().1);
-
-        // The dip is deepest at the tallest part of the peak, not at the edges
-        // (the old rectified-duck voice notched the edges instead).
-        assert!(apex_output < edge_output);
-        assert!(apex_output < ceiling);
     }
 
     #[test]
-    fn fold_sustained_clip_relaxes_to_the_ceiling() {
-        let mut processor = DetailClipper::new(48_000.0);
-        let mut last = processor.process(2.0, settings(ClipMode::Fold, 30.0, 1.0));
-        let first = last;
-        for _ in 0..8_192 {
-            last = processor.process(2.0, settings(ClipMode::Fold, 30.0, 1.0));
-        }
-
-        assert!(first.output < first.clipped);
-        assert!((last.output - last.clipped).abs() < 1.0e-3);
-    }
-
-    #[test]
-    fn fold_mode_is_polarity_symmetric() {
-        let mut positive = DetailClipper::new(48_000.0);
-        let mut negative = DetailClipper::new(48_000.0);
-
-        for input in [1.1, 1.4, 2.0, 1.2, 0.8] {
-            let up = positive
-                .process(input, settings(ClipMode::Fold, 30.0, 1.0))
-                .output;
-            let down = negative
-                .process(-input, settings(ClipMode::Fold, 30.0, 1.0))
-                .output;
-            assert!((up + down).abs() < 1.0e-6);
+    fn fold_adaa_converges_to_the_pointwise_fold_for_small_steps() {
+        // The ADAA quotient is the mean of f over [x1, x]; for tiny steps that
+        // equals f(midpoint). (Larger steps diverge on purpose — that is the
+        // aliasing suppression.)
+        let c = 1.0_f32;
+        for shape in [FoldShape::Sine, FoldShape::Triangle] {
+            let mut x1 = -1.8_f32;
+            let mut x = x1;
+            while x <= 1.8 {
+                let y = fold_adaa(x, x1, c, 1.0, shape);
+                let mid = fold_mix_value(0.5 * (x + x1), c, 1.0, shape);
+                assert!(
+                    (y - mid).abs() < 1.0e-3,
+                    "shape {shape:?} x {x}: {y} vs {mid}"
+                );
+                x1 = x;
+                x += 0.001;
+            }
         }
     }
 
     #[test]
-    fn all_modes_respect_the_ceiling() {
-        for mode in [ClipMode::Clean, ClipMode::Detail, ClipMode::Fold] {
+    fn clean_and_detail_still_respect_the_ceiling() {
+        for mode in [ClipMode::Clean, ClipMode::Detail] {
             let mut processor = DetailClipper::new(96_000.0);
             for ceiling in [0.01_f32, 0.1, 0.5, 1.0, 2.0] {
                 for input in [-100.0, -2.0, -0.25, 0.25, 2.0, 100.0] {
@@ -510,6 +682,7 @@ mod tests {
                             mode,
                             detail_hz: 30.0,
                             amount: 1.0,
+                            shape: FoldShape::Sine,
                         },
                     );
                     assert!(frame.output.abs() <= ceiling + 1.0e-6);

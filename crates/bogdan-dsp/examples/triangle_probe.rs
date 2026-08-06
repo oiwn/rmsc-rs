@@ -1,58 +1,55 @@
-//! Eyeball the three clip modes on a slow triangle: Detail should notch the
-//! plateau edges (its DnB-bass voice), Fold should dip deepest at the apex.
+//! Eyeball the wavefolder on a slow sine that exceeds the ceiling. A proper
+//! fold reflects back inside the ceiling (output -> 0 near driven = 2C) rather
+//! than flattening at the top.
 //!
 //! Run: `cargo run -q --example triangle_probe -p bogdan-dsp`
 
-use bogdan_dsp::{ClipMode, DetailClipper, DetailSettings};
+use bogdan_dsp::{ClipMode, DetailClipper, DetailSettings, FoldShape};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const FREQ: f32 = 110.0;
-const DRIVE: f32 = 2.85; // ~9.1 dB
-const CEILING: f32 = 0.99; // ~-0.1 dB
-const DETAIL_HZ: f32 = 30.0; // low cutoff so Fold tracks the peak shape
+const DRIVE: f32 = 2.0; // pushes the +1.0 peak to 2C (a full fold to zero)
+const CEILING: f32 = 1.0;
 
-fn triangle(phase: f32) -> f32 {
-    // phase in cycles -> triangle in [-1, 1]
-    4.0 * (phase - (phase + 0.5).floor()).abs() - 1.0
-}
-
-fn settings(mode: ClipMode) -> DetailSettings {
+fn fold(shape: FoldShape) -> DetailSettings {
     DetailSettings {
         drive: DRIVE,
         ceiling: CEILING,
-        mode,
-        detail_hz: DETAIL_HZ,
+        mode: ClipMode::Fold,
+        detail_hz: 1_000.0,
         amount: 1.0,
+        shape,
     }
 }
 
 fn main() {
     let samples_per_cycle = (SAMPLE_RATE as f32 / FREQ) as usize;
-    let mut detail = DetailClipper::new(SAMPLE_RATE);
-    let mut fold = DetailClipper::new(SAMPLE_RATE);
+    let mut sine = DetailClipper::new(SAMPLE_RATE);
+    let mut tri = DetailClipper::new(SAMPLE_RATE);
 
-    // Warm up a few cycles so both filters settle.
-    for i in 0..(samples_per_cycle * 4) {
+    // Warm up so the one-sample ADAA memory is primed.
+    for i in 0..samples_per_cycle {
         let ph = (i as f32 / SAMPLE_RATE as f32) * FREQ;
-        let _ = detail.process(triangle(ph), settings(ClipMode::Detail));
-        let _ = fold.process(triangle(ph), settings(ClipMode::Fold));
+        let x = (std::f32::consts::TAU * ph).sin();
+        let _ = sine.process(x, fold(FoldShape::Sine));
+        let _ = tri.process(x, fold(FoldShape::Triangle));
     }
 
-    let start = samples_per_cycle * 4;
-    println!("idx\tdriven\tclip\tdetail_out\tfold_out");
+    let start = samples_per_cycle;
+    println!("idx\tdriven\tsine_out\ttri_out");
     for i in start..(start + samples_per_cycle) {
         let ph = (i as f32 / SAMPLE_RATE as f32) * FREQ;
-        let d = detail.process(triangle(ph), settings(ClipMode::Detail));
-        let f = fold.process(triangle(ph), settings(ClipMode::Fold));
-        // Only print the positive clipped plateau so the shapes are legible.
-        if d.clipped > 0.0 && d.delta > 0.0 {
+        let x = (std::f32::consts::TAU * ph).sin();
+        let s = sine.process(x, fold(FoldShape::Sine));
+        let t = tri.process(x, fold(FoldShape::Triangle));
+        // Print near the peaks where the fold is visible.
+        if s.driven.abs() > CEILING * 0.6 {
             println!(
-                "{}\t{:+.3}\t{:+.3}\t{:+.3}\t{:+.3}",
+                "{}\t{:+.3}\t{:+.3}\t{:+.3}",
                 i - start,
-                d.driven,
-                d.clipped,
-                d.output,
-                f.output
+                s.driven,
+                s.output,
+                t.output
             );
         }
     }

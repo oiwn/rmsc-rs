@@ -1,6 +1,6 @@
 //! Truce wrapper for the Bogdan detail-preserving clipper.
 
-use bogdan_dsp::{ClipMode, DetailClipper, DetailSettings};
+use bogdan_dsp::{ClipMode, DetailClipper, DetailSettings, FoldShape};
 use truce::prelude::*;
 
 mod editor;
@@ -19,6 +19,22 @@ impl Mode {
             Mode::Clean => ClipMode::Clean,
             Mode::Detail => ClipMode::Detail,
             Mode::Fold => ClipMode::Fold,
+        }
+    }
+}
+
+/// Wavefolder transfer function, mirrors [`bogdan_dsp::FoldShape`].
+#[derive(ParamEnum)]
+pub enum Shape {
+    Sine,
+    Triangle,
+}
+
+impl Shape {
+    fn to_dsp(self) -> FoldShape {
+        match self {
+            Shape::Sine => FoldShape::Sine,
+            Shape::Triangle => FoldShape::Triangle,
         }
     }
 }
@@ -61,16 +77,21 @@ pub struct BogdanParams {
     )]
     pub detail: FloatParam,
 
-    /// Inward depth as a percentage; 0% is a plain clip, 100% is full motion.
+    /// Effect depth: 0% is a plain clip, 100% is full motion (inward duck for
+    /// Detail, clip→fold blend for Fold).
     #[param(
         id = 4,
         name = "Amount",
-        range = "linear(0, 100)",
-        default = 100,
+        range = "linear(0, 1)",
+        default = 1,
         unit = "%",
         smooth = "exp(5)"
     )]
     pub amount: FloatParam,
+
+    /// Wavefolder transfer function (Fold mode only). Defaults to `Sine`.
+    #[param(id = 5, name = "Shape", default = 0)]
+    pub shape: EnumParam<Shape>,
 
     /// Interleaved `[driven, processed]` frames for the oscilloscope.
     #[skip]
@@ -124,7 +145,8 @@ impl PluginLogic for Bogdan {
                 ceiling: db_to_linear(params.ceiling.read()),
                 mode: params.mode.value().to_dsp(),
                 detail_hz: params.detail.read(),
-                amount: params.amount.read() / 100.0,
+                amount: params.amount.read(),
+                shape: params.shape.value().to_dsp(),
             };
 
             for channel in 0..buffer.channels() {

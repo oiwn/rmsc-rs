@@ -44,3 +44,7 @@ later measured and listened-to comparison is complete.
   sample rate: <https://kilohearts.com/products/compactor>.
 - The primary target material is drums and mix buses, not transparent
   true-peak mastering or unrestricted creative wavefolding.
+
+## Readings
+
+- <https://ccrma.stanford.edu/~jatin/ComplexNonlinearities/Wavefolder.html>

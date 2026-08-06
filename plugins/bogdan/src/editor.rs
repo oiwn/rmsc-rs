@@ -10,7 +10,7 @@ use truce_egui::{EditorUi, EguiEditor};
 
 use crate::{BogdanParams, BogdanParamsParamId as P};
 
-const EDITOR_SIZE: (u32, u32) = (520, 320);
+const EDITOR_SIZE: (u32, u32) = (560, 376);
 const VIEW_SAMPLES: usize = 1_024;
 const HISTORY_SAMPLES: usize = 8_192;
 const SCOPE_HEIGHT: f32 = 184.0;
@@ -154,32 +154,58 @@ impl EditorUi<BogdanParams> for BogdanEditor {
 
         ui.painter().rect_filled(ui.max_rect(), 0.0, BACKGROUND);
         ui.vertical_centered(|ui| {
-            ui.add_space(5.0);
-            ui.label(RichText::new("BOGDAN").strong().size(16.0).color(TEXT));
+            ui.add_space(12.0);
             ui.label(
-                RichText::new("detail-preserving clipper")
-                    .size(10.0)
-                    .color(TEXT_DIM),
+                RichText::new("BOGDAN")
+                    .strong()
+                    .size(24.0)
+                    .extra_letter_spacing(2.0)
+                    .color(TEXT),
             );
-            ui.add_space(5.0);
+            ui.add_space(1.0);
+            // Subtitle plus a build stamp so the loaded bundle is identifiable.
+            ui.label(
+                RichText::new(concat!(
+                    "detail-preserving clipper  (v",
+                    env!("CARGO_PKG_VERSION"),
+                    ")"
+                ))
+                .strong()
+                .size(12.0)
+                .color(TEXT_DIM),
+            );
+            ui.add_space(8.0);
 
             let ceiling = db_to_linear(state.get_param_plain(P::Ceiling));
             self.draw_scope(ui, ceiling);
 
-            ui.add_space(5.0);
-            ui.horizontal_centered(|ui| {
+            ui.add_space(14.0);
+            // Center the control cluster: two 80px dropdowns + four 60px knobs +
+            // five 16px gaps. Zero the auto item-spacing so the gaps are exactly
+            // GAP (otherwise egui inflates the row past the ceiling and the last
+            // dropdown loses its right margin), then a single leading pad centers
+            // it — the remaining width on the right equals that pad.
+            const GAP: f32 = 16.0;
+            const CLUSTER_WIDTH: f32 = 2.0 * 80.0 + 4.0 * 60.0 + 5.0 * GAP;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let lead = ((ui.available_width() - CLUSTER_WIDTH) / 2.0).max(0.0);
+                ui.add_space(lead);
                 // The dropdown's label baseline aligns with the knob labels, so
-                // Mode sits in the same control row rather than above it.
+                // the selectors sit in the same control row as the knobs.
                 param_dropdown(ui, state, P::Mode, "Mode", 1);
-                ui.add_space(12.0);
+                ui.add_space(GAP);
                 param_knob(ui, state, P::Drive, "Drive");
-                ui.add_space(12.0);
+                ui.add_space(GAP);
                 param_knob(ui, state, P::Ceiling, "Ceiling");
-                ui.add_space(12.0);
+                ui.add_space(GAP);
                 param_knob(ui, state, P::Detail, "Detail");
-                ui.add_space(12.0);
+                ui.add_space(GAP);
                 param_knob(ui, state, P::Amount, "Amount");
+                ui.add_space(GAP);
+                param_dropdown(ui, state, P::Shape, "Shape", 1);
             });
+            ui.add_space(14.0);
         });
     }
 }
