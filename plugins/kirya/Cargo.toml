@@ -1,0 +1,30 @@
+[package]
+name = "kirya"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Kirya Dattorro plate reverb"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+default = ["clap", "vst3"]
+clap = ["dep:truce-clap", "dep:clap-sys"]
+vst3 = ["dep:truce-vst3"]
+rt-paranoid = ["truce/rt-paranoid"]
+
+[dependencies]
+musictools-core = { workspace = true }
+kirya-dsp = { workspace = true }
+truce = { workspace = true }
+truce-egui = { workspace = true }
+truce-clap = { workspace = true, optional = true }
+truce-vst3 = { workspace = true, optional = true }
+egui = { workspace = true }
+clap-sys = { workspace = true, optional = true }
+
+[lints]
+workspace = true

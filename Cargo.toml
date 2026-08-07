@@ -3,12 +3,16 @@ resolver = "3"
 members = [
     "crates/musictools-core",
     "crates/bogdan-dsp",
+    "crates/kirya-dsp",
     "plugins/bogdan",
+    "plugins/kirya",
 ]
 default-members = [
     "crates/musictools-core",
     "crates/bogdan-dsp",
+    "crates/kirya-dsp",
     "plugins/bogdan",
+    "plugins/kirya",
 ]
 
 [workspace.package]
@@ -21,6 +25,8 @@ repository = "https://github.com/oiwn/musictools-rs"
 [workspace.dependencies]
 musictools-core = { path = "crates/musictools-core" }
 bogdan-dsp = { path = "crates/bogdan-dsp" }
+kirya-dsp = { path = "crates/kirya-dsp" }
+realfft = "3"
 truce = { version = "=6.3.0" }
 truce-egui = { version = "=6.3.0" }
 truce-clap = { version = "=6.3.0" }
