@@ -12,3 +12,11 @@ crate = "bogdan"
 category = "effect"
 fourcc = "Bgdn"
 vst3_subcategory = "Distortion"
+
+[[plugin]]
+name = "Kirya"
+bundle_id = "kirya"
+crate = "kirya"
+category = "effect"
+fourcc = "Kiry"
+vst3_subcategory = "Reverb"

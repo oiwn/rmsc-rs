@@ -1,0 +1,21 @@
+[package]
+name = "kirya-dsp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Framework-independent Dattorro plate reverb for the Kirya plugin"
+
+[features]
+default = ["analysis"]
+# Offline impulse-response analysis (envelope, spectrogram, RT60). Off the
+# audio thread only; the reverb itself never touches it.
+analysis = ["dep:realfft"]
+
+[dependencies]
+musictools-core = { workspace = true }
+realfft = { workspace = true, optional = true }
+
+[lints]
+workspace = true

@@ -6,9 +6,7 @@ task.
 
 ## Next
 
-- After the active DSP specification is locked, replace Bogdan's hard-clip
-  reference path with the selected detail-preservation pipeline.
-- Validate Bogdan as CLAP and VST3 before packaging or expanding its interface.
+Nothing committed. See [`ideas.md`](ideas.md) for uncommitted possibilities.
 
 ## Later
 

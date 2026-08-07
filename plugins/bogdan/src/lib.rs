@@ -73,6 +73,7 @@ pub struct BogdanParams {
         range = "log(20, 2000)",
         default = 1000,
         unit = "Hz",
+        format = "format_hz_param",
         smooth = "exp(20)"
     )]
     pub detail: FloatParam,
@@ -96,6 +97,15 @@ pub struct BogdanParams {
     /// Interleaved `[driven, processed]` frames for the oscilloscope.
     #[skip]
     scope_tap: Arc<AudioTap<f32>>,
+}
+
+impl BogdanParams {
+    /// Display formatter for the Detail cutoff, named by `#[param(format)]`.
+    /// Shared with Kirya so both plugins print frequencies the same way.
+    #[allow(clippy::unused_self)]
+    fn format_hz_param(&self, value: f64) -> String {
+        musictools_core::format_hz(value)
+    }
 }
 
 /// Per-instance filter state for Bogdan's supported mono/stereo layouts.

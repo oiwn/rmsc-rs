@@ -6,8 +6,15 @@ This Rust 2024 Cargo workspace separates reusable code from plugin wrappers:
 
 - `crates/musictools-core/` contains framework-independent, suite-wide utilities.
 - `crates/bogdan-dsp/` contains Bogdan's DSP, unit tests, and offline examples.
-- `plugins/bogdan/` contains the Truce wrapper and egui editor.
-- `specs/` records architecture, active work, roadmap items, and ideas.
+- `crates/kirya-dsp/` contains Kirya's plate reverb, its offline impulse-response
+  analysis (feature `analysis`, on by default), unit tests, and examples.
+- `plugins/bogdan/` and `plugins/kirya/` contain the Truce wrappers and egui
+  editors.
+- `specs/` records architecture, per-plugin specs, active work, roadmap items,
+  and ideas. `specs/overview.md` holds workspace-wide architecture and house
+  rules; `specs/bogdan.md` and `specs/kirya.md` own each plugin's description,
+  signal chain, parameter reference, gotchas, and reference links. A new plugin
+  gets its own `specs/<name>.md`.
 - `truce.toml` defines plugin metadata; generated bundles belong in
   `target/bundles/` and must not be committed.
 
@@ -22,6 +29,11 @@ Keep plugin-specific signal processing in its DSP crate. Move code into
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` treats
   all lint warnings as failures.
 - `cargo run -p bogdan-dsp --example triangle_probe` runs a DSP probe locally.
+- `cargo run -p kirya-dsp --release --example ir_probe` prints Kirya's impulse
+  response, its reverb time, and an ASCII spectrogram.
+- `cargo run -p kirya-dsp --release --example tank_stability` sweeps the reverb
+  tank's parameter corners at four sample rates and fails on any runaway.
+  Both Kirya examples want `--release`; they render tens of seconds of audio.
 - `cargo truce build -p bogdan --clap --vst3` creates CLAP and VST3 bundles.
   Install `cargo-truce` version 6.3.0 first.
 
@@ -58,5 +70,6 @@ validation notes for audio behavior changes.
 
 This project uses **specdev** (specification-driven development). Load the
 specdev skill when starting a session, continuing from specs, or picking up a
-task. Always read `specs/overview.md` and `specs/ctx.md` before coding.
+task. Always read `specs/overview.md` and `specs/ctx.md` before coding, plus the
+`specs/<plugin>.md` for whichever plugin you are touching.
 <!-- END specdev -->
