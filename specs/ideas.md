@@ -28,3 +28,12 @@ Open questions: does the parameter stay automatable while greyed (it should —
 hiding it from the host would break existing automation), and is greying enough
 or should the row reflow? Kirya has the same situation with Mod Rate / Depth /
 Shape at Mod Depth 0, so whatever pattern lands here should suit both.
+
+## Move the offline Analyzer into musictools-core
+
+Kirya's `analysis::Analyzer` (envelope, spectrogram, RT60) and igorek's
+`ir_probe` spectrogram now both hand-roll the same ASCII FFT analysis with
+`realfft` — two concrete consumers, which is the house rule's threshold for
+promotion. A shared `musictools-core` analyzer (behind a feature so the
+core crate stays dependency-free for the audio path) would let both probes
+and any future plugin share one implementation.

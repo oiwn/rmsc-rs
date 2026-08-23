@@ -6,6 +6,7 @@ live in its own spec:
 
 - [`bogdan.md`](bogdan.md) — detail-preserving clipper and wavefolder.
 - [`kirya.md`](kirya.md) — Dattorro plate reverb with a live IR probe.
+- [`igorek.md`](igorek.md) — two-stage convolver for percussion.
 
 ## Architecture
 
@@ -17,7 +18,8 @@ audio plugins. Shared dependency versions live in the virtual workspace root.
 | `crates/musictools-core` | Framework-independent, suite-wide utilities: identity constants, `finite_or`, `format_hz`. |
 | `crates/bogdan-dsp` | Bogdan's DSP, tests, offline examples. |
 | `crates/kirya-dsp` | Kirya's reverb and its offline IR analysis (feature `analysis`, default on), tests, examples. |
-| `plugins/bogdan`, `plugins/kirya` | Truce wrappers and egui editors only. |
+| `crates/igorek-dsp` | Igorek's partitioned convolution engine, room IR generator, IR baking; tests, examples. |
+| `plugins/bogdan`, `plugins/kirya`, `plugins/igorek` | Truce wrappers and egui editors only. |
 
 New plugins belong under `plugins/` with a sibling `crates/<name>-dsp`, and opt
 into the centrally pinned Truce dependencies. Code moves into `musictools-core`

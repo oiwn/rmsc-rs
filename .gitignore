@@ -2,6 +2,7 @@
 # will have compiled files and executables
 debug/
 target/
+.zcode/
 
 # This workspace ships plugin binaries, so Cargo.lock is tracked.
 .DS_Store
