@@ -1,0 +1,17 @@
+[package]
+name = "igorek-dsp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Framework-independent two-stage convolver for the Igorek plugin"
+
+[dependencies]
+musictools-core = { workspace = true }
+realfft = { workspace = true }
+hound = { workspace = true }
+rand = { workspace = true }
+
+[lints]
+workspace = true

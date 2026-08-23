@@ -20,3 +20,11 @@ crate = "kirya"
 category = "effect"
 fourcc = "Kiry"
 vst3_subcategory = "Reverb"
+
+[[plugin]]
+name = "Igorek"
+bundle_id = "igorek"
+crate = "igorek"
+category = "effect"
+fourcc = "Igrk"
+vst3_subcategory = "Reverb"

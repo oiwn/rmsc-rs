@@ -191,6 +191,19 @@ used by the editor and `get_param_*` calls.
 - **Real-time rule:** no allocation, locks, or I/O in `process`. Size all
   buffers in `reset`. `PRESERVE_DSP_STATE` controls whether state survives a
   reset.
+- `PluginLogic::latency() -> u32` (default 0) reports processing latency in
+  samples for host delay compensation — used by Igorek (128 samples).
+
+### Custom state (`custom_state`)
+
+`truce::custom_state` persists non-param data (e.g. Igorek's loaded Color IR)
+inside the host session blob:
+
+- `#[derive(State)]` on a `Default` struct; fields implement `StateField`
+  (`write_field` / `read_field`, binary-friendly). Absent/old fields load as
+  `Default`, so adding fields is migration-safe.
+- `StateBinding<T>::new(&PluginContext)` then `sync()` / `get()` / `update()`;
+  `serialize_into(&mut Vec<u8>)` is the allocation-free form once warmed.
 
 ### Wait-free audio→GUI streaming: `AudioTap<T>`
 
@@ -290,6 +303,11 @@ assert_eq!(allocations, 0);
 
 ## Gotchas
 
+- **No drag'n'drop in truce-egui 6.3.** Window events come from the
+  `baseview-truce` fork, whose `WindowEvent` enum is only
+  `Resized / Focused / Unfocused / WillClose` — no file-drop variants, so
+  egui's `dropped_files` can never populate. Use a native `rfd` dialog on a
+  helper thread (dialogs block) for file loading.
 - `id` values are a permanent contract — never renumber an existing param.
 - Call each smoothed `FloatParam::read()` once per frame, before the channel
   loop, and reuse the value for every channel.

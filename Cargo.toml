@@ -4,15 +4,19 @@ members = [
     "crates/musictools-core",
     "crates/bogdan-dsp",
     "crates/kirya-dsp",
+    "crates/igorek-dsp",
     "plugins/bogdan",
     "plugins/kirya",
+    "plugins/igorek",
 ]
 default-members = [
     "crates/musictools-core",
     "crates/bogdan-dsp",
     "crates/kirya-dsp",
+    "crates/igorek-dsp",
     "plugins/bogdan",
     "plugins/kirya",
+    "plugins/igorek",
 ]
 
 [workspace.package]
@@ -26,7 +30,11 @@ repository = "https://github.com/oiwn/musictools-rs"
 musictools-core = { path = "crates/musictools-core" }
 bogdan-dsp = { path = "crates/bogdan-dsp" }
 kirya-dsp = { path = "crates/kirya-dsp" }
+igorek-dsp = { path = "crates/igorek-dsp" }
 realfft = "3"
+hound = "3.5"
+rand = "0.9"
+rfd = { version = "0.15", default-features = false }
 truce = { version = "=6.3.0" }
 truce-egui = { version = "=6.3.0" }
 truce-clap = { version = "=6.3.0" }
